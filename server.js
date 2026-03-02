@@ -178,6 +178,20 @@ async function refreshCache() {
 }
 
 // ── ROUTES ──
+// Debug - vidi sirove bytes od ZET feeda
+app.get('/debug', async (req, res) => {
+  try {
+    const buf = await fetchBuffer(ZET_VEHICLE_POSITIONS);
+    res.json({
+      totalBytes: buf.length,
+      first50bytes: buf.slice(0, 50).toString('hex'),
+      first10bytes_decimal: Array.from(buf.slice(0, 10)),
+    });
+  } catch(e) {
+    res.json({ error: e.message });
+  }
+});
+```
 
 // Health check
 app.get('/', (req, res) => {

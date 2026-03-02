@@ -10,7 +10,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 
 // ── ZET GTFS-RT ENDPOINTI ──
-const ZET_VEHICLE_POSITIONS = 'https://www.zet.hr/gtfs-realtime/vehicle-positions.pb';
+const ZET_VEHICLE_POSITIONS = 'https://zet.hr/gtfs-rt-protobuf';
 const ZET_TRIP_UPDATES      = 'https://www.zet.hr/gtfs-realtime/trip-updates.pb';
 
 // Cache — ne bombardiramo ZET server

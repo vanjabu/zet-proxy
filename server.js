@@ -115,9 +115,9 @@ function parseGtfsRt(buffer) {
                   const ptag = readVarint();
                   const pfn = ptag >> 3; const pwt = ptag & 0x7;
                   if (pfn === 1 && pwt === 5) {
-                    vp.lat = buffer.readFloatBE(pos); pos += 4;
+                    vp.lat = buffer.readFloatLE(pos); pos += 4;
                   } else if (pfn === 2 && pwt === 5) {
-                    vp.lng = buffer.readFloatBE(pos); pos += 4;
+                    vp.lng = buffer.readFloatLE(pos); pos += 4;
                   } else if (pfn === 3 && pwt === 5) {
                     vp.bearing = buffer.readFloatBE(pos); pos += 4;
                   } else if (pfn === 4 && pwt === 0) {

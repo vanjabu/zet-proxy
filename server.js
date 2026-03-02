@@ -191,7 +191,6 @@ app.get('/debug', async (req, res) => {
     res.json({ error: e.message });
   }
 });
-```
 
 // Health check
 app.get('/', (req, res) => {

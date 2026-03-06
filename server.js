@@ -215,16 +215,33 @@ app.get('/vehicles', async (req, res) => {
 
 app.get('/route/:routeId', (req, res) => {
   const routeId = req.params.routeId;
-  const shapeId = routeShapes[routeId];
-  if (!shapeId || !shapes[shapeId]) {
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+
+  // Pronađi sve shapes za ovu liniju
+  const matchingShapes = Object.entries(routeShapes)
+    .filter(([rId]) => rId === routeId)
+    .map(([, shapeId]) => shapeId);
+
+  if (!matchingShapes.length) {
     return res.status(404).json({ error: 'Route not found', routeId });
   }
-  res.json({
-    routeId,
-    shapeId,
-    points: shapes[shapeId],
-    count: shapes[shapeId].length
-  });
+
+  // Ako imamo koordinate vozila, uzmi najbliži shape
+  let bestShapeId = matchingShapes[0];
+  if (!isNaN(lat) && !isNaN(lng)) {
+    let bestDist = Infinity;
+    for (const shapeId of matchingShapes) {
+      if (!shapes[shapeId]) continue;
+      for (const [sLat, sLng] of shapes[shapeId]) {
+        const d = distanceM(lat, lng, sLat, sLng);
+        if (d < bestDist) { bestDist = d; bestShapeId = shapeId; }
+      }
+    }
+  }
+
+  const points = shapes[bestShapeId] || [];
+  res.json({ routeId, shapeId: bestShapeId, points, count: points.length });
 });
 
 app.get('/stops', (req, res) => {

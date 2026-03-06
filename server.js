@@ -15,9 +15,11 @@ const ZET_STATIC_URL = 'https://zet.hr/gtfs-scheduled/latest';
 let cache = { vehicles: null, lastFetch: 0 };
 const CACHE_TTL = 30 * 1000;
 
-// Stops: { stopId: { lat, lng, name } }
 let stops = [];
 let stopsLoaded = false;
+let shapes = {};
+let routeShapes = {};
+let shapesLoaded = false;
 
 // ── FETCH HELPER ──
 function fetchBuffer(url) {
@@ -36,7 +38,7 @@ function fetchBuffer(url) {
   });
 }
 
-// ── DISTANCE (Haversine, metres) ──
+// ── DISTANCE (metres) ──
 function distanceM(lat1, lng1, lat2, lng2) {
   const R = 6371000;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -55,37 +57,93 @@ function nearestStop(lat, lng) {
   return { stop: best, dist: Math.round(bestDist) };
 }
 
-// ── LOAD GTFS STATIC ──
+// ── LOAD GTFS STATIC (stops + shapes) ──
 async function loadGtfsStatic() {
   try {
     console.log('[GTFS] Downloading static data...');
     const buf = await fetchBuffer(ZET_STATIC_URL);
     console.log(`[GTFS] Downloaded ${buf.length} bytes`);
-
     const zip = new AdmZip(buf);
+
+    // --- STOPS ---
     const stopsEntry = zip.getEntry('stops.txt');
-    if (!stopsEntry) throw new Error('stops.txt not found in zip');
+    if (stopsEntry) {
+      const csv = stopsEntry.getData().toString('utf8');
+      const lines = csv.split('\n');
+      const header = lines[0].split(',').map(h => h.trim().replace(/"/g,''));
+      const latIdx = header.indexOf('stop_lat');
+      const lngIdx = header.indexOf('stop_lon');
+      const nameIdx = header.indexOf('stop_name');
+      const idIdx = header.indexOf('stop_id');
 
-    const csv = stopsEntry.getData().toString('utf8');
-    const lines = csv.split('\n');
-    const header = lines[0].split(',').map(h => h.trim().replace(/"/g,''));
-    const latIdx = header.indexOf('stop_lat');
-    const lngIdx = header.indexOf('stop_lon');
-    const nameIdx = header.indexOf('stop_name');
-    const idIdx = header.indexOf('stop_id');
-
-    stops = [];
-    for (let i = 1; i < lines.length; i++) {
-      const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
-      if (cols.length < 3) continue;
-      const lat = parseFloat(cols[latIdx]);
-      const lng = parseFloat(cols[lngIdx]);
-      if (isNaN(lat) || isNaN(lng)) continue;
-      stops.push({ id: cols[idIdx], name: cols[nameIdx], lat, lng });
+      stops = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
+        if (cols.length < 3) continue;
+        const lat = parseFloat(cols[latIdx]);
+        const lng = parseFloat(cols[lngIdx]);
+        if (isNaN(lat) || isNaN(lng)) continue;
+        stops.push({ id: cols[idIdx], name: cols[nameIdx], lat, lng });
+      }
+      stopsLoaded = true;
+      console.log(`[GTFS] Loaded ${stops.length} stops`);
     }
 
-    stopsLoaded = true;
-    console.log(`[GTFS] Loaded ${stops.length} stops`);
+    // --- SHAPES ---
+    const shapesEntry = zip.getEntry('shapes.txt');
+    if (shapesEntry) {
+      const csv = shapesEntry.getData().toString('utf8');
+      const lines = csv.split('\n');
+      const header = lines[0].split(',').map(h => h.trim().replace(/"/g,''));
+      const shapeIdIdx = header.indexOf('shape_id');
+      const latIdx = header.indexOf('shape_pt_lat');
+      const lngIdx = header.indexOf('shape_pt_lon');
+      const seqIdx = header.indexOf('shape_pt_sequence');
+
+      const raw = {};
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
+        if (cols.length < 3) continue;
+        const id = cols[shapeIdIdx];
+        const lat = parseFloat(cols[latIdx]);
+        const lng = parseFloat(cols[lngIdx]);
+        const seq = parseInt(cols[seqIdx]);
+        if (isNaN(lat) || isNaN(lng)) continue;
+        if (!raw[id]) raw[id] = [];
+        raw[id].push({ lat, lng, seq });
+      }
+
+      shapes = {};
+      for (const id in raw) {
+        raw[id].sort((a, b) => a.seq - b.seq);
+        shapes[id] = raw[id].map(p => [p.lat, p.lng]);
+      }
+      console.log(`[GTFS] Loaded ${Object.keys(shapes).length} shapes`);
+    }
+
+    // --- TRIPS (routeId → shapeId mapping) ---
+    const tripsEntry = zip.getEntry('trips.txt');
+    if (tripsEntry) {
+      const csv = tripsEntry.getData().toString('utf8');
+      const lines = csv.split('\n');
+      const header = lines[0].split(',').map(h => h.trim().replace(/"/g,''));
+      const routeIdx = header.indexOf('route_id');
+      const shapeIdx = header.indexOf('shape_id');
+
+      routeShapes = {};
+      for (let i = 1; i < lines.length; i++) {
+        const cols = lines[i].split(',').map(c => c.trim().replace(/"/g,''));
+        if (cols.length < 2) continue;
+        const routeId = cols[routeIdx];
+        const shapeId = cols[shapeIdx];
+        if (routeId && shapeId && !routeShapes[routeId]) {
+          routeShapes[routeId] = shapeId;
+        }
+      }
+      shapesLoaded = true;
+      console.log(`[GTFS] Mapped ${Object.keys(routeShapes).length} routes to shapes`);
+    }
+
   } catch(e) {
     console.error('[GTFS] Static load failed:', e.message);
   }
@@ -95,8 +153,6 @@ async function loadGtfsStatic() {
 async function refreshCache() {
   try {
     const buf = await fetchBuffer(ZET_FEED_URL);
-    console.log(`[ZET] Got ${buf.length} bytes`);
-
     const feed = GtfsRealtimeBindings.transit_realtime.FeedMessage.decode(buf);
     const vehicles = [];
 
@@ -106,16 +162,13 @@ async function refreshCache() {
       const lat = vp.position.latitude;
       const lng = vp.position.longitude;
 
-      // Zagreb bounds check
       if (lat < 45.6 || lat > 46.1 || lng < 15.7 || lng > 16.3) continue;
 
       // Filter: mora biti blizu poznate stanice (300m)
       let nearStop = null;
-      let distToStop = 9999;
       if (stopsLoaded && stops.length > 0) {
         const { stop, dist } = nearestStop(lat, lng);
-        distToStop = dist;
-        if (dist > 300) continue; // nije blizu nijedne stanice → depo/garaža
+        if (dist > 300) continue;
         nearStop = stop ? stop.name : null;
       }
 
@@ -127,13 +180,12 @@ async function refreshCache() {
         routeId: vp.trip && vp.trip.routeId ? vp.trip.routeId : '',
         vehicleLabel: vp.vehicle && vp.vehicle.label ? vp.vehicle.label : entity.id,
         nearStop,
-        distToStop,
       });
     }
 
     cache.vehicles = vehicles;
     cache.lastFetch = Date.now();
-    console.log(`[ZET] ${vehicles.length} vehicles (after stop filter)`);
+    console.log(`[ZET] ${vehicles.length} vehicles`);
   } catch(e) {
     console.error('[ZET] Error:', e.message);
   }
@@ -144,6 +196,9 @@ app.get('/', (req, res) => res.json({
   status: 'ok',
   stopsLoaded,
   stopsCount: stops.length,
+  shapesLoaded,
+  shapesCount: Object.keys(shapes).length,
+  routesCount: Object.keys(routeShapes).length,
   vehiclesCached: cache.vehicles ? cache.vehicles.length : 0,
   lastFetch: cache.lastFetch ? new Date(cache.lastFetch).toISOString() : null
 }));
@@ -155,7 +210,20 @@ app.get('/vehicles', async (req, res) => {
     vehicles: cache.vehicles,
     count: cache.vehicles.length,
     timestamp: new Date(cache.lastFetch).toISOString(),
-    stopsLoaded,
+  });
+});
+
+app.get('/route/:routeId', (req, res) => {
+  const routeId = req.params.routeId;
+  const shapeId = routeShapes[routeId];
+  if (!shapeId || !shapes[shapeId]) {
+    return res.status(404).json({ error: 'Route not found', routeId });
+  }
+  res.json({
+    routeId,
+    shapeId,
+    points: shapes[shapeId],
+    count: shapes[shapeId].length
   });
 });
 
@@ -165,17 +233,16 @@ app.get('/stops', (req, res) => {
 
 app.get('/status', (req, res) => res.json({
   uptime: Math.round(process.uptime()),
-  stopsLoaded,
-  stopsCount: stops.length,
+  stopsLoaded, stopsCount: stops.length,
+  shapesLoaded, shapesCount: Object.keys(shapes).length,
   cached: cache.vehicles ? cache.vehicles.length : 0,
 }));
 
 // ── START ──
 app.listen(PORT, async () => {
-  console.log(`ZET Proxy v2 on port ${PORT}`);
+  console.log(`ZET Proxy v3 on port ${PORT}`);
   await loadGtfsStatic();
   await refreshCache();
   setInterval(refreshCache, CACHE_TTL);
-  // Osvježi GTFS Static jednom dnevno
   setInterval(loadGtfsStatic, 24 * 60 * 60 * 1000);
 });
